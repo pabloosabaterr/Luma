@@ -322,3 +322,6 @@ const char *lsp_path_to_uri(const char *path, ArenaAllocator *arena);
 Token *lsp_token_at_position(LSPDocument *doc, LSPPosition position);
 AstNode *lsp_node_at_position(LSPDocument *doc, LSPPosition position);
 Symbol *lsp_symbol_at_position(LSPDocument *doc, LSPPosition position);
+
+char *lsp_semantic_tokens_full(LSPDocument *doc, ArenaAllocator *arena);
+const char *lsp_semantic_tokens_capabilities(void);

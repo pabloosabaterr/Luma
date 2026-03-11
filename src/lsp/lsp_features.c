@@ -154,37 +154,29 @@ static void collect_all_symbols(Scope *scope, ScopeSymbol *buf,
 // Returns NULL if not determinable.
 static const char *enclosing_function_name(LSPDocument *doc, int line_0based) {
   if (!doc || !doc->tokens) return NULL;
-  // Walk backwards from the cursor looking for a token on an earlier line
-  // that is an identifier immediately preceded by '->' or 'fn' pattern.
-  // Simpler heuristic: find the last function-scope name in the scope tree
-  // whose associated_node->line is <= cursor line+1 (1-based).
-  // We don't have that info reliably, so just scan tokens for the pattern:
-  //   IDENTIFIER  '->'  'fn'  '('   ... which is a Luma function declaration.
-  // Walk backwards from cursor line.
+
+  static char fn_name_buf[65];
   const char *best_fn = NULL;
+
   for (size_t i = 0; i < doc->token_count; i++) {
     Token *tok = &doc->tokens[i];
-    int tok_line = (int)tok->line - 1; // convert to 0-based
+    int tok_line = (int)tok->line - 1;
+
     if (tok_line > line_0based) break;
-    // Look for pattern: identifier followed by '->' on same or next token
-    // In Luma: "const NAME -> fn ..."
-    // We detect by finding identifiers whose next non-ws token is '->'
+
     if (tok->type_ == TOK_IDENTIFIER && tok->length > 0 && tok->length < 64) {
-      // Peek ahead for '->'
       if (i + 1 < doc->token_count) {
         Token *next = &doc->tokens[i + 1];
-        // token type for '->' — check value
-        if (next->length == 2 && next->value &&
-            next->value[0] == '-' && next->value[1] == '>') {
-          // This looks like a declaration — record as potential function name
-          char tmp[65];
-          memcpy(tmp, tok->value, tok->length);
-          tmp[tok->length] = '\0';
-          best_fn = tok->value; // points into token array (stable)
+        if (next->type_ == TOK_RIGHT_ARROW) {
+          size_t copy_len = tok->length < 64 ? tok->length : 64;
+          memcpy(fn_name_buf, tok->value, copy_len);
+          fn_name_buf[copy_len] = '\0';
+          best_fn = fn_name_buf;
         }
       }
     }
   }
+
   return best_fn;
 }
 

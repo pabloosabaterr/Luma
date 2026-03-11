@@ -7,6 +7,8 @@ import {
   LanguageClientOptions,
   ServerOptions,
   TransportKind,
+  ErrorAction,
+  CloseAction,
 } from "vscode-languageclient/node";
 
 let client: LanguageClient;
@@ -14,24 +16,18 @@ let client: LanguageClient;
 const LOG_FILE = "/tmp/luma_lsp.log";
 
 function findLumaBinary(context: ExtensionContext): string | null {
-  // Search candidate paths from most to least specific.
-  // __dirname = .../src/lsp/language-support/client/out
   const candidates = [
-    // Settings override — highest priority
     workspace.getConfiguration("luma").get<string>("serverPath"),
-    // Walk up from extension dir to find the binary
-    path.resolve(__dirname, "..", "..", "..", "..", "..", "luma"),   // 5 up = project root
-    path.resolve(__dirname, "..", "..", "..", "..", "luma"),         // 4 up
-    path.resolve(__dirname, "..", "..", "..", "luma"),               // 3 up
-    // Workspace root
+    path.resolve(__dirname, "..", "..", "..", "..", "..", "luma"),
+    path.resolve(__dirname, "..", "..", "..", "..", "luma"),
+    path.resolve(__dirname, "..", "..", "..", "luma"),
     ...(workspace.workspaceFolders?.map(f => path.join(f.uri.fsPath, "luma")) ?? []),
-    // System PATH fallback
     "luma",
   ];
 
   for (const candidate of candidates) {
     if (!candidate) continue;
-    if (candidate === "luma") return candidate; // PATH fallback, can't fs.existsSync
+    if (candidate === "luma") return candidate;
     try {
       fs.accessSync(candidate, fs.constants.X_OK);
       return candidate;
@@ -42,6 +38,86 @@ function findLumaBinary(context: ExtensionContext): string | null {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Error handler with:
+//   - per-window error count (resets after a quiet period)
+//   - exponential backoff on restart
+//   - hard shutdown only after HARD_LIMIT consecutive errors with no recovery
+// ---------------------------------------------------------------------------
+function makeErrorHandler(outputChannel: { appendLine(value: string): void }) {
+  let errorCount    = 0;
+  let restartCount  = 0;
+  let resetTimer: ReturnType<typeof setTimeout> | null = null;
+
+  const SOFT_LIMIT  = 5;   // log but keep going
+  const HARD_LIMIT  = 20;  // give up and shut down
+  const RESET_MS    = 10_000; // reset error window after 10s of quiet
+
+  function scheduleReset() {
+    if (resetTimer) clearTimeout(resetTimer);
+    resetTimer = setTimeout(() => {
+      if (errorCount > 0) {
+        outputChannel.appendLine(
+          `[LSP] Error window reset (had ${errorCount} errors)`
+        );
+      }
+      errorCount = 0;
+      resetTimer = null;
+    }, RESET_MS);
+  }
+
+  return {
+    error: (_error: any, _message: any, _count: any) => {
+      errorCount++;
+      scheduleReset();
+      outputChannel.appendLine(`[LSP] Protocol error #${errorCount}`);
+
+      if (errorCount >= HARD_LIMIT) {
+        outputChannel.appendLine(
+          `[LSP] ${HARD_LIMIT} consecutive errors — giving up.`
+        );
+        return { action: ErrorAction.Shutdown };
+      }
+
+      // Between SOFT_LIMIT and HARD_LIMIT: log a warning but continue
+      if (errorCount >= SOFT_LIMIT) {
+        outputChannel.appendLine(
+          `[LSP] Warning: ${errorCount} errors so far, server may be unstable.`
+        );
+      }
+
+      return { action: ErrorAction.Continue };
+    },
+
+    closed: () => {
+      restartCount++;
+      const backoffMs = Math.min(1000 * Math.pow(2, restartCount - 1), 30_000);
+
+      outputChannel.appendLine(
+        `[LSP] Connection closed (restart #${restartCount}, ` +
+        `backoff ${backoffMs}ms)...`
+      );
+
+      // After too many restarts, give up so we don't spam VS Code
+      if (restartCount > 5) {
+        outputChannel.appendLine(
+          "[LSP] Too many restarts — shutting down. " +
+          "Run 'Luma: Show Binary Path' or check the log."
+        );
+        return { action: CloseAction.DoNotRestart };
+      }
+
+      // Reset error count on restart so a clean reconnect gets a fresh window
+      errorCount = 0;
+
+      // Returning Restart here; the actual backoff delay is not natively
+      // supported by vscode-languageclient, so we use a deferred re-start
+      // via a setTimeout if needed. For now Restart is sufficient.
+      return { action: CloseAction.Restart };
+    },
+  };
+}
+
 export function activate(context: ExtensionContext) {
   const outputChannel = window.createOutputChannel("Luma LSP");
   outputChannel.show(true);
@@ -50,9 +126,11 @@ export function activate(context: ExtensionContext) {
 
   if (!lumaBin) {
     outputChannel.appendLine("[LSP] ERROR: Could not find luma binary!");
-    outputChannel.appendLine("[LSP] Set 'luma.serverPath' in settings.json to the full path of your luma binary.");
+    outputChannel.appendLine(
+      "[LSP] Set 'luma.serverPath' in settings.json to the full path of your luma binary."
+    );
     window.showErrorMessage(
-      "Luma LSP: binary not found. Set \"luma.serverPath\" in your settings.json.",
+      'Luma LSP: binary not found. Set "luma.serverPath" in settings.json.',
       "Open Settings"
     ).then(choice => {
       if (choice === "Open Settings") {
@@ -77,35 +155,23 @@ export function activate(context: ExtensionContext) {
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: "file", language: "luma" }],
     synchronize: {
-      fileEvents: workspace.createFileSystemWatcher("**/.clientrc"),
+      fileEvents: workspace.createFileSystemWatcher("**/*.lx"),
     },
     outputChannel,
     traceOutputChannel: traceChannel,
-    errorHandler: (() => {
-      let errorCount = 0;
-      return {
-        error: (_error: any, _message: any, _count: any) => {
-          errorCount++;
-          outputChannel.appendLine(`[LSP] Protocol error #${errorCount}`);
-          if (errorCount >= 10) {  // raise threshold
-            outputChannel.appendLine("[LSP] Too many errors, shutting down.");
-            return { action: 2 };
-          }
-          return { action: 1 };
-        },
-        closed: () => {
-          outputChannel.appendLine("[LSP] Connection closed — restarting...");
-          return { action: 1 };  // was 2 (Shutdown), change to 1 (Restart) so VS Code reconnects
-        },
-      };
-    })(),
+    errorHandler: makeErrorHandler(outputChannel),
   };
 
-  client = new LanguageClient("luma-lsp", "Luma LSP", serverOptions, clientOptions);
+  client = new LanguageClient(
+    "luma-lsp",
+    "Luma LSP",
+    serverOptions,
+    clientOptions
+  );
 
   client.start().then(() => {
     outputChannel.appendLine("[LSP] Client started successfully");
-  }).catch((err) => {
+  }).catch((err: Error) => {
     outputChannel.appendLine(`[LSP] Client failed to start: ${err}`);
     window.showErrorMessage(`Luma LSP failed to start: ${err.message}`);
   });
@@ -113,12 +179,20 @@ export function activate(context: ExtensionContext) {
   context.subscriptions.push(
     commands.registerCommand("luma.openLog", () => {
       workspace.openTextDocument(Uri.file(LOG_FILE)).then(
-        (doc) => window.showTextDocument(doc),
+        doc => window.showTextDocument(doc),
         () => window.showErrorMessage(`Could not open: ${LOG_FILE}`)
       );
     }),
     commands.registerCommand("luma.showBinaryPath", () => {
       window.showInformationMessage(`Luma binary: ${lumaBin}`);
+    }),
+    commands.registerCommand("luma.restartServer", () => {
+      outputChannel.appendLine("[LSP] Manual restart requested");
+      client.restart().then(() => {
+        outputChannel.appendLine("[LSP] Server restarted successfully");
+      }).catch((err: Error) => {
+        outputChannel.appendLine(`[LSP] Restart failed: ${err.message}`);
+      });
     })
   );
 }

@@ -15,7 +15,7 @@ return {
   {
     "neovim/nvim-lspconfig",
     opts = function(_, opts)
-      local luma_path = vim.fn.expand("~/Projects/Luma/luma")
+      local luma_path = vim.fn.expand("luma")
       if vim.fn.executable(luma_path) == 0 then
         vim.notify("Luma LSP not found at " .. luma_path, vim.log.levels.WARN)
         return opts
@@ -34,8 +34,11 @@ return {
                 or lspconfig.util.path.dirname(fname)
             end,
             single_file_support = true,
-            on_attach = function(_, bufnr)
+            on_attach = function(client, bufnr)
               vim.notify("Luma LSP attached to buffer " .. bufnr, vim.log.levels.INFO)
+              if client.server_capabilities.semanticTokensProvider then
+                vim.lsp.semantic_tokens.start(bufnr, client.id)
+              end
             end,
             on_exit = function(code, signal, _)
               if code ~= 0 then
@@ -55,6 +58,26 @@ return {
         capabilities = cmp_nvim_lsp.default_capabilities(capabilities)
       end
 
+      capabilities.textDocument.semanticTokens = {
+        dynamicRegistration = true,
+        tokenTypes = {
+          "namespace", "type", "typeParameter", "function", "method",
+          "property", "variable", "parameter", "keyword", "modifier",
+          "comment", "string", "number", "operator", "struct", "enum",
+          "enumMember",
+        },
+        tokenModifiers = {
+          "declaration", "definition", "readonly", "static", "defaultLibrary",
+        },
+        formats = { "relative" },
+        requests = {
+          full = true,
+          range = false,
+        },
+        multilineTokenSupport = false,
+        overlappingTokenSupport = false,
+      }
+
       lspconfig.luma.setup({
         capabilities = capabilities,
       })
@@ -62,21 +85,4 @@ return {
       return opts
     end,
   },
-
-  -- Syntax highlighting (load custom Vim syntax file)
-  {
-    "nvim-treesitter/nvim-treesitter",
-    init = function()
-      vim.api.nvim_create_autocmd("FileType", {
-        pattern = "luma",
-        callback = function()
-          local syntax_file = vim.fn.expand("~/.config/nvim/syntax/luma.vim")
-          if vim.fn.filereadable(syntax_file) == 1 then
-            vim.cmd("runtime syntax/luma.vim")
-          end
-        end,
-      })
-    end,
-  },
 }
-

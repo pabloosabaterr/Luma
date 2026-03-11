@@ -24,23 +24,62 @@
         "configuration": "./language-configuration.json"
       }
     ],
-    "grammars": [
+    "semanticTokenScopes": [
       {
         "language": "luma",
-        "scopeName": "source.luma",
-        "path": "./syntaxes/luma.tmLanguage.json"
-      }
-    ],
-    "themes": [
-      {
-        "label": "Luma Tokyo Night",
-        "uiTheme": "vs-dark",
-        "path": "./themes/luma-tokyo-night.json"
-      },
-      {
-        "label": "Luma Horizon Reimagined",
-        "uiTheme": "vs-dark",
-        "path": "./themes/luma-horizon-reimagined.json"
+        "scopes": {
+          "namespace": [
+            "entity.name.namespace.luma"
+          ],
+          "type": [
+            "entity.name.type.luma"
+          ],
+          "typeParameter": [
+            "entity.name.type.parameter.luma"
+          ],
+          "function": [
+            "entity.name.function.luma"
+          ],
+          "method": [
+            "entity.name.function.method.luma"
+          ],
+          "property": [
+            "variable.other.property.luma"
+          ],
+          "variable": [
+            "variable.other.luma"
+          ],
+          "parameter": [
+            "variable.parameter.luma"
+          ],
+          "keyword": [
+            "keyword.control.luma"
+          ],
+          "modifier": [
+            "storage.modifier.luma"
+          ],
+          "comment": [
+            "comment.line.luma"
+          ],
+          "string": [
+            "string.quoted.luma"
+          ],
+          "number": [
+            "constant.numeric.luma"
+          ],
+          "operator": [
+            "keyword.operator.luma"
+          ],
+          "struct": [
+            "entity.name.type.struct.luma"
+          ],
+          "enum": [
+            "entity.name.type.enum.luma"
+          ],
+          "enumMember": [
+            "variable.other.enummember.luma"
+          ]
+        }
       }
     ]
   },

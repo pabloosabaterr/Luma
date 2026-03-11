@@ -9,19 +9,18 @@
 #define DEBOUNCE_MS 500
 
 static struct timespec g_last_change = {0, 0};
-static bool            g_pending_analysis = false;
+static bool g_pending_analysis = false;
 
 static long ms_since(struct timespec *t) {
   struct timespec now;
   clock_gettime(CLOCK_MONOTONIC, &now);
-  return (now.tv_sec - t->tv_sec) * 1000 +
-         (now.tv_nsec - t->tv_nsec) / 1000000;
+  return (now.tv_sec - t->tv_sec) * 1000 + (now.tv_nsec - t->tv_nsec) / 1000000;
 }
 
 // Run analysis + publish diagnostics for a document.
 // Called either immediately (on save/open) or after debounce (on change).
 static void analyze_and_publish(LSPServer *server, LSPDocument *doc,
-                                 const char *uri, ArenaAllocator *arena) {
+                                const char *uri, ArenaAllocator *arena) {
   BuildConfig config = {0};
   config.check_mem = true;
   lsp_document_analyze(doc, server, &config);
@@ -54,7 +53,8 @@ void lsp_check_pending_analysis(LSPServer *server) {
     if (doc && doc->needs_reanalysis) {
       ArenaAllocator temp;
       arena_allocator_init(&temp, 64 * 1024);
-      fprintf(stderr, "[LSP] Debounce: running deferred analysis for %s\n", doc->uri);
+      fprintf(stderr, "[LSP] Debounce: running deferred analysis for %s\n",
+              doc->uri);
       analyze_and_publish(server, doc, doc->uri, &temp);
       arena_destroy(&temp);
     }
@@ -77,6 +77,7 @@ void lsp_handle_message(LSPServer *server, const char *message) {
 
   switch (method) {
   case LSP_METHOD_INITIALIZE: {
+    fprintf(stderr, "[LSP] FULL INIT MESSAGE: %s\n", message);
     fprintf(stderr, "[LSP] Handling initialize\n");
 
     if (request_id >= 0) {
@@ -93,7 +94,27 @@ void lsp_handle_message(LSPServer *server, const char *message) {
           "\"hoverProvider\":true,"
           "\"definitionProvider\":true,"
           "\"completionProvider\":{\"triggerCharacters\":[\".\",\":\"]},"
-          "\"documentSymbolProvider\":true"
+          "\"documentSymbolProvider\":true,"
+          /* --- ADD THIS BLOCK --- */
+          "\"semanticTokensProvider\":{"
+          "\"legend\":{"
+          "\"tokenTypes\":["
+          "\"namespace\",\"type\",\"typeParameter\","
+          "\"function\",\"method\",\"property\","
+          "\"variable\",\"parameter\",\"keyword\","
+          "\"modifier\",\"comment\",\"string\","
+          "\"number\",\"operator\",\"struct\","
+          "\"enum\",\"enumMember\""
+          "],"
+          "\"tokenModifiers\":["
+          "\"declaration\",\"definition\","
+          "\"readonly\",\"static\",\"defaultLibrary\""
+          "]"
+          "},"
+          "\"full\":true,"
+          "\"range\":false"
+          "}"
+          /* ---------------------- */
           "},"
           "\"serverInfo\":{\"name\":\"Luma LSP\",\"version\":\"0.1.0\"}"
           "}";
@@ -116,7 +137,8 @@ void lsp_handle_message(LSPServer *server, const char *message) {
     int version = extract_int(message, "version");
 
     if (uri && text) {
-      fprintf(stderr, "[LSP] Opening document: %s (version %d)\n", uri, version);
+      fprintf(stderr, "[LSP] Opening document: %s (version %d)\n", uri,
+              version);
       fprintf(stderr, "[LSP] Document content length: %zu\n", strlen(text));
 
       lsp_ast_cache_invalidate(server, uri);
@@ -165,7 +187,8 @@ void lsp_handle_message(LSPServer *server, const char *message) {
     // Check if it's didSave (we don't have a dedicated enum value for it)
     const char *method_val = extract_string(message, "method", &temp_arena);
     if (method_val && strncmp(method_val, "textDocument/didSave", 20) == 0) {
-      fprintf(stderr, "[LSP] Handling didSave — triggering immediate analysis\n");
+      fprintf(stderr,
+              "[LSP] Handling didSave — triggering immediate analysis\n");
       const char *uri = extract_string(message, "uri", &temp_arena);
       if (uri) {
         lsp_ast_cache_invalidate(server, uri);
@@ -266,7 +289,8 @@ void lsp_handle_message(LSPServer *server, const char *message) {
     }
 
     size_t count = 0;
-    LSPCompletionItem *items = lsp_completion(doc, position, &count, &temp_arena);
+    LSPCompletionItem *items =
+        lsp_completion(doc, position, &count, &temp_arena);
 
     fprintf(stderr, "[LSP] Completion: got %zu items\n", count);
 
@@ -284,8 +308,10 @@ void lsp_handle_message(LSPServer *server, const char *message) {
 
     serialize_completion_items(items, count, result, result_size);
 
-    fprintf(stderr, "[LSP] Completion: sending response (id=%d, items=%zu, bytes=%zu)\n",
-            request_id, count, strlen(result));
+    fprintf(
+        stderr,
+        "[LSP] Completion: sending response (id=%d, items=%zu, bytes=%zu)\n",
+        request_id, count, strlen(result));
 
     lsp_send_response(request_id, result);
     free(result);
@@ -313,7 +339,8 @@ void lsp_handle_message(LSPServer *server, const char *message) {
     arena_allocator_init(&sym_arena, 64 * 1024);
 
     size_t sym_count = 0;
-    LSPDocumentSymbol **symbols = lsp_document_symbols(doc, &sym_count, &sym_arena);
+    LSPDocumentSymbol **symbols =
+        lsp_document_symbols(doc, &sym_count, &sym_arena);
 
     if (!symbols || sym_count == 0) {
       arena_destroy(&sym_arena);
@@ -333,18 +360,20 @@ void lsp_handle_message(LSPServer *server, const char *message) {
     off += snprintf(result + off, buf_size - off, "[");
     for (size_t i = 0; i < sym_count && off < buf_size - 2; i++) {
       LSPDocumentSymbol *sym = symbols[i];
-      if (i > 0) off += snprintf(result + off, buf_size - off, ",");
-      off += snprintf(result + off, buf_size - off,
-        "{\"name\":\"%s\",\"kind\":%d,"
-        "\"range\":{\"start\":{\"line\":%d,\"character\":%d},"
-        "\"end\":{\"line\":%d,\"character\":%d}},"
-        "\"selectionRange\":{\"start\":{\"line\":%d,\"character\":%d},"
-        "\"end\":{\"line\":%d,\"character\":%d}}}",
-        sym->name ? sym->name : "", (int)sym->kind,
-        sym->range.start.line, sym->range.start.character,
-        sym->range.end.line,   sym->range.end.character,
-        sym->selection_range.start.line, sym->selection_range.start.character,
-        sym->selection_range.end.line,   sym->selection_range.end.character);
+      if (i > 0)
+        off += snprintf(result + off, buf_size - off, ",");
+      off += snprintf(
+          result + off, buf_size - off,
+          "{\"name\":\"%s\",\"kind\":%d,"
+          "\"range\":{\"start\":{\"line\":%d,\"character\":%d},"
+          "\"end\":{\"line\":%d,\"character\":%d}},"
+          "\"selectionRange\":{\"start\":{\"line\":%d,\"character\":%d},"
+          "\"end\":{\"line\":%d,\"character\":%d}}}",
+          sym->name ? sym->name : "", (int)sym->kind, sym->range.start.line,
+          sym->range.start.character, sym->range.end.line,
+          sym->range.end.character, sym->selection_range.start.line,
+          sym->selection_range.start.character, sym->selection_range.end.line,
+          sym->selection_range.end.character);
     }
     snprintf(result + off, buf_size - off, "]");
 
@@ -352,6 +381,25 @@ void lsp_handle_message(LSPServer *server, const char *message) {
     lsp_send_response(request_id, result);
     free(result);
     arena_destroy(&sym_arena);
+    break;
+  }
+
+  case LSP_METHOD_TEXT_DOCUMENT_SEMANTIC_TOKENS: {
+    fprintf(stderr, "[LSP] Handling semanticTokens/full\n");
+    const char *uri = extract_string(message, "uri", &temp_arena);
+    if (!uri) {
+      lsp_send_response(request_id, "{\"data\":[]}");
+      break;
+    }
+
+    LSPDocument *doc = lsp_document_find(server, uri);
+    if (!doc) {
+      lsp_send_response(request_id, "{\"data\":[]}");
+      break;
+    }
+
+    char *result = lsp_semantic_tokens_full(doc, &temp_arena);
+    lsp_send_response(request_id, result ? result : "{\"data\":[]}");
     break;
   }
 
