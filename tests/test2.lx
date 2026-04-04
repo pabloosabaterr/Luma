@@ -17,9 +17,9 @@
 }
 
 pub const main -> fn () int {
-  // io::print("%d\n", [io::int_arg(random())]);
-
-  return 0;
+  let err: int = GetLastError();
+  // ExitProcess(err);
+  return 42;
 }
 
 

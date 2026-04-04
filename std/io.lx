@@ -1,53 +1,85 @@
 //! Input/Output operations module
 //!
-//! This module provides formatted printing functions and file reading capabilities.
-//! It is completely self-contained with no external module dependencies.
-//! All required syscalls and memory operations are implemented locally.
-//!
-//! PLATFORM: Linux x86_64 and macOS x86_64/ARM64 (via @os blocks)
-//!
-//! WARNING: This code will NOT work on:
-//!   - Windows (NT kernel uses a completely different syscall mechanism;
-//!              use platform I/O APIs or libc wrappers instead)
-//!   - ARM/ARM64 Linux (different syscall numbers)
-//!   - 32-bit x86 Linux (different syscall numbers and calling convention)
+//! PLATFORM: Linux x86_64, macOS x86_64/ARM64, and Windows x86_64
 
 @module "std_io"
 
-/// Syscall numbers — platform-specific via @os blocks.
-/// macOS BSD table indices; the 0x2000000 class prefix is handled by the runtime.
+// ============================================================================
+// PLATFORM: Syscall numbers (POSIX only)
+// ============================================================================
+
 @os {
     "linux" -> {
         const SYS_READ: int  = 0;
         const SYS_WRITE: int = 1;
         const SYS_OPEN: int  = 2;
         const SYS_CLOSE: int = 3;
+        const O_RDONLY: int  = 0;
+        const O_RDWR: int    = 2;
+        const STDOUT: int    = 1;
+        const STDERR: int    = 2;
     }
     "macos" -> {
         const SYS_READ: int  = 3;
         const SYS_WRITE: int = 4;
         const SYS_OPEN: int  = 5;
         const SYS_CLOSE: int = 6;
+        const O_RDONLY: int  = 0;
+        const O_RDWR: int    = 2;
+        const STDOUT: int    = 1;
+        const STDERR: int    = 2;
+    }
+    "windows" -> {
+        const GENERIC_READ: int        = 2147483648; // 0x80000000
+        const GENERIC_WRITE: int       = 1073741824; // 0x40000000
+        const FILE_SHARE_READ: int     = 1;
+        const OPEN_EXISTING: int       = 3;
+        const INVALID_HANDLE_VALUE: int = -1;
+        const STD_OUTPUT_HANDLE: int   = -11;
+        const STD_ERROR_HANDLE: int    = -12;
+        const STD_INPUT_HANDLE: int    = -10;
+
+        #dll_import("kernel32.dll", callconv: "stdcall")
+        pub const WriteFile -> fn (
+            hFile: int,
+            lpBuffer: *void,
+            nNumberOfBytesToWrite: int,
+            lpNumberOfBytesWritten: *int,
+            lpOverlapped: *void
+        ) int;
+
+        #dll_import("kernel32.dll", callconv: "stdcall")
+        pub const ReadFile -> fn (
+            hFile: int,
+            lpBuffer: *void,
+            nNumberOfBytesToRead: int,
+            lpNumberOfBytesRead: *int,
+            lpOverlapped: *void
+        ) int;
+
+        #dll_import("kernel32.dll", callconv: "stdcall")
+        pub const CreateFileA -> fn (
+            lpFileName: *byte,
+            dwDesiredAccess: int,
+            dwShareMode: int,
+            lpSecurityAttributes: *void,
+            dwCreationDisposition: int,
+            dwFlagsAndAttributes: int,
+            hTemplateFile: int
+        ) int;
+
+        #dll_import("kernel32.dll", callconv: "stdcall")
+        pub const CloseHandle -> fn (hObject: int) int;
+
+        #dll_import("kernel32.dll", callconv: "stdcall")
+        pub const GetStdHandle -> fn (nStdHandle: int) int;
     }
 }
 
-/// O_RDONLY is 0 on both platforms; O_RDWR differs.
-const O_RDONLY: int = 0;
+// ============================================================================
+// Memory helpers (all platforms)
+// ============================================================================
 
-@os {
-    "linux" -> {
-        const O_RDWR: int = 2;
-    }
-    "macos" -> {
-        const O_RDWR: int = 2;
-    }
-}
-
-/// Standard file descriptors — identical on all POSIX platforms.
-const STDOUT: int = 1;
-const STDERR: int = 2;
-
-/// Local memcpy implementation — copies `n` bytes from `src` to `dest`.
 const local_memcpy -> fn (dest: *void, src: *void, n: int) *void {
     let d: *byte = cast<*byte>(dest);
     let s: *byte = cast<*byte>(src);
@@ -57,7 +89,6 @@ const local_memcpy -> fn (dest: *void, src: *void, n: int) *void {
     return dest;
 }
 
-/// Local realloc implementation — allocates a new block, copies old contents, frees the old block.
 #returns_ownership
 const local_realloc -> fn (ptr: *void, old_size: int, new_size: int) *void {
     if (ptr == cast<*void>(0)) {
@@ -69,55 +100,107 @@ const local_realloc -> fn (ptr: *void, old_size: int, new_size: int) *void {
     return new_ptr;
 }
 
-/// Write `count` bytes from `buf` to file descriptor `fd`.
+// ============================================================================
+// Low-level I/O — platform-specific
+// ============================================================================
+
 const local_write -> fn (fd: int, buf: *void, count: int) int {
-    return __syscall__(SYS_WRITE, fd, cast<int>(buf), count);
+    @os {
+        "linux"   -> { return __syscall__(SYS_WRITE, fd, cast<int>(buf), count); }
+        "macos"   -> { return __syscall__(SYS_WRITE, fd, cast<int>(buf), count); }
+        "windows" -> {
+            let handle: int = GetStdHandle(fd);
+            let written: int = 0;
+            WriteFile(handle, buf, count, &written, cast<*void>(0));
+            return written;
+        }
+    }
 }
 
-/// Read up to `count` bytes from file descriptor `fd` into `buf`.
 const local_read -> fn (fd: int, buf: *void, count: int) int {
-    return __syscall__(SYS_READ, fd, cast<int>(buf), count);
+    @os {
+        "linux"   -> { return __syscall__(SYS_READ, fd, cast<int>(buf), count); }
+        "macos"   -> { return __syscall__(SYS_READ, fd, cast<int>(buf), count); }
+        "windows" -> {
+            let bytes_read: int = 0;
+            let ok: int = ReadFile(fd, buf, count, &bytes_read, cast<*void>(0));
+            if (ok == 0) { return -1; }
+            return bytes_read;
+        }
+    }
 }
 
-/// Open a file at `path` with the given `flags` and `mode`.
-const local_open -> fn (path: *byte, flags: int, mode: int) int {
-    return __syscall__(SYS_OPEN, cast<int>(path), flags, mode);
+const local_open_read -> fn (path: *byte) int {
+    @os {
+        "linux"   -> { return __syscall__(SYS_OPEN, cast<int>(path), O_RDONLY, 0); }
+        "macos"   -> { return __syscall__(SYS_OPEN, cast<int>(path), O_RDONLY, 0); }
+        "windows" -> {
+            return CreateFileA(
+                path, GENERIC_READ, FILE_SHARE_READ,
+                cast<*void>(0), OPEN_EXISTING, 0, 0
+            );
+        }
+    }
 }
 
-/// Close file descriptor `fd`.
+const local_open_write -> fn (path: *byte) int {
+    @os {
+        "linux"   -> { return __syscall__(SYS_OPEN, cast<int>(path), O_RDWR, 0); }
+        "macos"   -> { return __syscall__(SYS_OPEN, cast<int>(path), O_RDWR, 0); }
+        "windows" -> {
+            return CreateFileA(
+                path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
+                cast<*void>(0), OPEN_EXISTING, 0, 0
+            );
+        }
+    }
+}
+
 const local_close -> fn (fd: int) int {
-    return __syscall__(SYS_CLOSE, fd);
+    @os {
+        "linux"   -> { return __syscall__(SYS_CLOSE, fd); }
+        "macos"   -> { return __syscall__(SYS_CLOSE, fd); }
+        "windows" -> { return CloseHandle(fd); }
+    }
 }
 
-/// Returns true if `result` represents a syscall error (range [-4095, -1]).
 const local_is_error -> fn (result: int) bool {
-    return result < 0 && result >= -4095;
+    @os {
+        "linux"   -> { return result < 0 && result >= -4095; }
+        "macos"   -> { return result < 0 && result >= -4095; }
+        "windows" -> { return result == INVALID_HANDLE_VALUE || result == 0; }
+    }
 }
 
-/// Write a null-terminated string `s` to file descriptor `fd`.
 const local_write_str -> fn (fd: int, s: *byte) int {
     let len: int = 0;
     loop (s[len] != cast<byte>(0)) : (++len) {}
     return local_write(fd, cast<*void>(s), len);
 }
 
-/// Write a null-terminated string `s` to stderr.
 const local_eprint -> fn (s: *byte) int {
-    return local_write_str(STDERR, s);
+    @os {
+        "linux"   -> { return local_write_str(STDERR, s); }
+        "macos"   -> { return local_write_str(STDERR, s); }
+        "windows" -> { return local_write_str(STD_ERROR_HANDLE, s); }
+    }
 }
 
-/// Initial buffer size for file reading operations (4 KB).
-const INITIAL_BUFFER_SIZE: int = 4096;
-/// Factor by which read buffers grow when they need to expand.
-const BUFFER_GROWTH_FACTOR: int = 2;
+// ============================================================================
+// Constants
+// ============================================================================
 
-/// Type tags for format arguments.
-const ARG_INT: int  = 0;
-const ARG_STR: int  = 1;
-const ARG_BYTE: int = 2;
+const INITIAL_BUFFER_SIZE: int  = 4096;
+const BUFFER_GROWTH_FACTOR: int = 2;
+const ARG_INT: int   = 0;
+const ARG_STR: int   = 1;
+const ARG_BYTE: int  = 2;
 const ARG_FLOAT: int = 3;
 
-/// A tagged-union value passed to print as a format argument.
+// ============================================================================
+// FormatArg
+// ============================================================================
+
 pub const FormatArg -> struct {
     tag: int,
     str_ptr: *byte,
@@ -125,7 +208,6 @@ pub const FormatArg -> struct {
     byte_val: byte
 };
 
-/// Sentinel FormatArg used to indicate the end of an argument list.
 pub const NULL_FORMAT_ARG: FormatArg = FormatArg {
     tag: -1,
     str_ptr: cast<*byte>(0),
@@ -133,38 +215,22 @@ pub const NULL_FORMAT_ARG: FormatArg = FormatArg {
     byte_val: '\0'
 };
 
-/// Construct a FormatArg wrapping a string pointer.
 pub const str_arg -> fn (arg: *byte) FormatArg {
-    return FormatArg {
-        tag: ARG_STR,
-        str_ptr: arg,
-        int_val: 0,
-        byte_val: '\0',
-    };
+    return FormatArg { tag: ARG_STR, str_ptr: arg, int_val: 0, byte_val: '\0' };
 }
 
-/// Construct a FormatArg wrapping an integer value.
 pub const int_arg -> fn (arg: int) FormatArg {
-    return FormatArg {
-        tag: ARG_INT,
-        str_ptr: "",
-        int_val: arg,
-        byte_val: '\0',
-    };
+    return FormatArg { tag: ARG_INT, str_ptr: "", int_val: arg, byte_val: '\0' };
 }
 
-/// Construct a FormatArg wrapping a single byte (character) value.
 pub const byte_arg -> fn (arg: byte) FormatArg {
-    return FormatArg {
-        tag: ARG_BYTE,
-        str_ptr: "",
-        int_val: 0,
-        byte_val: arg,
-    };
+    return FormatArg { tag: ARG_BYTE, str_ptr: "", int_val: 0, byte_val: arg };
 }
 
-/// Convert an integer to its decimal string representation.
-/// The returned buffer is heap-allocated; the caller is responsible for freeing it.
+// ============================================================================
+// Integer → string
+// ============================================================================
+
 #returns_ownership
 const from_int -> fn (n: int) *byte {
     if (n == 0) {
@@ -180,7 +246,7 @@ const from_int -> fn (n: int) *byte {
         n = -n;
     }
 
-    let buffer: [byte; 20]; // enough for any 64-bit integer
+    let buffer: [byte; 20];
     let i: int = 0;
 
     loop (n != 0) {
@@ -195,45 +261,18 @@ const from_int -> fn (n: int) *byte {
         i = i + 1;
     }
 
-    // Reverse into a heap-allocated result string
     let s: *byte = cast<*byte>(alloc((i + 1) * sizeof<byte>));
     loop [j: int = 0](j < i) : (j = j + 1) {
         s[j] = buffer[i - j - 1];
     }
     s[i] = cast<byte>(0);
-
     return s;
 }
 
-/// Prints a formatted string with mixed-type arguments to stdout.
-///
-/// Supports the following format specifiers:
-/// * `%d` - integer
-/// * `%s` - null-terminated string
-/// * `%c` - single byte/character
-/// * `%f` - float (requires precision suffix, e.g. `%.2f`)
-///
-/// The args array is bounds-checked against 256 entries to prevent overruns.
-/// Unrecognised specifiers are passed through as-is.
-///
-/// # Parameters
-/// * `s`    - Format string containing text and format placeholders
-/// * `args` - Array of up to 256 FormatArg values
-///
-/// # Returns
-/// The number of bytes written to stdout, or a negative error code.
-///
-/// # Example
-/// ```luma
-/// let args: [FormatArg; 256];
-/// args[0] = str_arg("Alice");
-/// args[1] = int_arg(30);
-/// args[2] = byte_arg('A');
-/// print("Name: %s, Age: %d, Initial: %c\n", args);
-/// ```
-///
-/// # Memory
-/// Uses a 1024-byte stack buffer; no heap allocation except via `from_int`.
+// ============================================================================
+// print
+// ============================================================================
+
 pub const print -> fn (s: *byte, args: [FormatArg; 256]) int {
     let buffer: [byte; 1024];
     let buf_index: int = 0;
@@ -249,14 +288,12 @@ pub const print -> fn (s: *byte, args: [FormatArg; 256]) int {
                 'd' -> {
                     if (arg.tag == ARG_INT) {
                         let num_str: *byte = from_int(arg.int_val);
-
                         loop [j: int = 0](num_str[j] != '\0') : (++j) {
                             buffer[buf_index] = num_str[j];
                             buf_index = buf_index + 1;
                         }
                         arg_index = arg_index + 1;
-                        i = i + 2; // skip '%d'
-
+                        i = i + 2;
                         free(num_str);
                         continue;
                     }
@@ -266,20 +303,19 @@ pub const print -> fn (s: *byte, args: [FormatArg; 256]) int {
                         buffer[buf_index] = arg.byte_val;
                         buf_index = buf_index + 1;
                         arg_index = arg_index + 1;
-                        i = i + 2; // skip '%c'
+                        i = i + 2;
                         continue;
                     }
                 }
                 's' -> {
                     if (arg.tag == ARG_STR) {
-                        let str_arg: *byte = arg.str_ptr;
-
-                        loop [j: int = 0](str_arg[j] != '\0') : (++j) {
-                            buffer[buf_index] = str_arg[j];
+                        let str_ptr: *byte = arg.str_ptr;
+                        loop [j: int = 0](str_ptr[j] != '\0') : (++j) {
+                            buffer[buf_index] = str_ptr[j];
                             buf_index = buf_index + 1;
                         }
                         arg_index = arg_index + 1;
-                        i = i + 2; // skip '%s'
+                        i = i + 2;
                         continue;
                     }
                 }
@@ -291,24 +327,17 @@ pub const print -> fn (s: *byte, args: [FormatArg; 256]) int {
         i = i + 1;
     }
 
-    let written: int = local_write(STDOUT, cast<*void>(&buffer), buf_index);
-    return written;
+    @os {
+        "linux"   -> { return local_write(STDOUT, cast<*void>(&buffer), buf_index); }
+        "macos"   -> { return local_write(STDOUT, cast<*void>(&buffer), buf_index); }
+        "windows" -> { return local_write(STD_OUTPUT_HANDLE, cast<*void>(&buffer), buf_index); }
+    }
 }
 
-/// Prints a formatted error message with integer arguments to stderr.
-///
-/// Supports only `%d` format specifiers. Intended for lightweight error reporting
-/// without pulling in the full FormatArg machinery.
-///
-/// # Parameters
-/// * `s`    - Format string containing text and `%d` placeholders
-/// * `args` - Array of up to 256 integers
-///
-/// # Returns
-/// The number of bytes written to stderr, or a negative error code.
-///
-/// # Memory
-/// Heap-allocates a 256-byte output buffer freed on return via defer.
+// ============================================================================
+// print_err
+// ============================================================================
+
 pub const print_err -> fn (s: *byte, args: [int; 256]) int {
     let buffer: *byte = cast<*byte>(alloc(256 * sizeof<byte>));
     let buf_index: int = 0;
@@ -319,45 +348,29 @@ pub const print_err -> fn (s: *byte, args: [int; 256]) int {
         if (s[i] == '%' && s[i + 1] == 'd' && arg_index < 256) {
             let num_str: *byte = from_int(args[arg_index]);
             defer { free(num_str); }
-
             loop [j: int = 0](num_str[j] != '\0') : (++j) {
                 buffer[buf_index] = num_str[j];
                 buf_index = buf_index + 1;
             }
             arg_index = arg_index + 1;
-            i = i + 1; // skip 'd' (loop increment handles '%')
+            i = i + 1;
         } else {
             buffer[buf_index] = s[i];
             buf_index = buf_index + 1;
         }
     }
     buffer[buf_index] = '\0';
-
-    let written: int = local_write_str(STDERR, buffer);
-    return written;
+    return local_eprint(buffer);
 }
 
-/// Reads the entire contents of a file into a heap-allocated, null-terminated buffer.
-///
-/// The buffer starts at INITIAL_BUFFER_SIZE (4 KB) and doubles in size whenever it
-/// fills, ensuring arbitrarily large files can be read. After reading, the buffer is
-/// shrunk to the exact size needed to minimise memory usage.
-///
-/// # Parameters
-/// * `path` - Null-terminated path to the file to read
-///
-/// # Returns
-/// A pointer to a newly allocated null-terminated string containing the file contents,
-/// or null on any error. Ownership is transferred to the caller, who must free it.
-///
-/// # Errors
-/// Returns null and prints a message to stderr if:
-/// * The file cannot be opened
-/// * Memory allocation fails at any stage
-/// * A read operation returns an error
+// ============================================================================
+// read_file
+// ============================================================================
+
 #returns_ownership
 pub const read_file -> fn (path: *byte) *byte {
-    let fd: int = local_open(path, O_RDONLY, 0);
+    let fd: int = local_open_read(path);
+
     if (local_is_error(fd)) {
         local_eprint("Error: File does not exist, can not read from file\n");
         return cast<*byte>(0);
@@ -375,7 +388,7 @@ pub const read_file -> fn (path: *byte) *byte {
     let bytes_read: int = 0;
 
     loop {
-        let read_size: int = buffer_size - total_read - 1; // reserve one byte for null terminator
+        let read_size: int = buffer_size - total_read - 1;
         bytes_read = local_read(fd, cast<*void>(cast<int>(buffer) + total_read), read_size);
 
         if (local_is_error(bytes_read)) {
@@ -386,12 +399,11 @@ pub const read_file -> fn (path: *byte) *byte {
         }
 
         if (bytes_read == 0) {
-            break; // EOF
+            break;
         }
 
         total_read = total_read + bytes_read;
 
-        // Grow the buffer if it is full (minus the null terminator slot)
         if (total_read >= buffer_size - 1) {
             let new_size: int = buffer_size * BUFFER_GROWTH_FACTOR;
             let new_buffer: *byte = cast<*byte>(local_realloc(cast<*void>(buffer), buffer_size, new_size));
@@ -408,10 +420,8 @@ pub const read_file -> fn (path: *byte) *byte {
         }
     }
 
-    // Null-terminate
     buffer[total_read] = cast<byte>(0);
 
-    // Shrink to exact size to avoid holding excess memory
     if (total_read < buffer_size - 1) {
         let final_buffer: *byte = cast<*byte>(alloc((total_read + 3) * sizeof<byte>));
         if (final_buffer != cast<*byte>(0)) {
@@ -421,7 +431,6 @@ pub const read_file -> fn (path: *byte) *byte {
             free(buffer);
             buffer = final_buffer;
         }
-
         buffer[total_read]     = cast<byte>(0);
         buffer[total_read + 1] = cast<byte>(0);
         buffer[total_read + 2] = cast<byte>(0);
@@ -431,19 +440,13 @@ pub const read_file -> fn (path: *byte) *byte {
     return buffer;
 }
 
-/// Writes a null-terminated buffer to an existing file.
-///
-/// Opens the file at `path` for reading and writing, writes the full contents
-/// of `buffer`, then closes the file. The file must already exist.
-///
-/// # Parameters
-/// * `path`   - Null-terminated path to the target file
-/// * `buffer` - Null-terminated string to write
-///
-/// # Returns
-/// The number of bytes written, or -1 on error.
+// ============================================================================
+// write_buffer_to_file
+// ============================================================================
+
 pub const write_buffer_to_file -> fn (path: *byte, buffer: *byte) int {
-    let fd: int = local_open(path, O_RDWR, 0);
+    let fd: int = local_open_write(path);
+
     if (local_is_error(fd)) {
         local_eprint("Error: File does not exist, can not write to file.\n");
         return -1;
@@ -462,7 +465,5 @@ pub const write_buffer_to_file -> fn (path: *byte, buffer: *byte) int {
 
     let written: int = local_write(fd, cast<*void>(buffer), length);
     local_close(fd);
-
     return written;
 }
-

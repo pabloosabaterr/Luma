@@ -4,32 +4,48 @@
  */
 
 #include "lsp.h"
-#include <dirent.h>
 #include <errno.h>
-#include <execinfo.h>
-#include <pthread.h>
 #include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/select.h>
-#include <sys/stat.h>
-#include <unistd.h>
+
+#if defined(_WIN32) || defined(__MINGW32__)
+  #include <winsock2.h>   /* select(), fd_set, struct timeval */
+  #include <windows.h>
+  #include <io.h>         /* _fileno */
+  /* MinGW does ship pthread via winpthreads — keep the same include */
+  #include <pthread.h>
+  #define HAVE_SELECT 1
+#else
+  #include <dirent.h>
+  #include <execinfo.h>
+  #define HAVE_EXECINFO 1
+  #include <pthread.h>
+  #include <sys/select.h>
+  #include <sys/stat.h>
+  #include <unistd.h>
+  #define HAVE_SELECT 1
+#endif
 
 static void crash_handler(int sig) {
   const char *name = "UNKNOWN";
   switch (sig) {
   case SIGSEGV: name = "SIGSEGV (segfault)";     break;
   case SIGABRT: name = "SIGABRT (abort/assert)";  break;
+#ifdef SIGBUS
   case SIGBUS:  name = "SIGBUS (bus error)";       break;
+#endif
   case SIGFPE:  name = "SIGFPE (float exception)"; break;
   case SIGILL:  name = "SIGILL (illegal instr)";   break;
   }
   fprintf(stderr, "\n[LSP] *** CRASH: signal %d (%s) ***\n", sig, name);
+#ifdef HAVE_EXECINFO
   void *frames[64];
   int n = backtrace(frames, 64);
   backtrace_symbols_fd(frames, n, fileno(stderr));
+#endif
   fflush(stderr);
   signal(sig, SIG_DFL);
   raise(sig);
@@ -38,7 +54,9 @@ static void crash_handler(int sig) {
 static void install_crash_handlers(void) {
   signal(SIGSEGV, crash_handler);
   signal(SIGABRT, crash_handler);
+#ifdef SIGBUS
   signal(SIGBUS,  crash_handler);
+#endif
   signal(SIGFPE,  crash_handler);
   signal(SIGILL,  crash_handler);
 }

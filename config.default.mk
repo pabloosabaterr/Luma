@@ -2,8 +2,15 @@
 
 CC       := gcc
 CFLAGS   ?= -Wall -Wextra -std=c17 -Wno-unused-variable -g -O0 -fno-omit-frame-pointer
-LDFLAGS  ?= -rdynamic
 INCLUDES ?= -Isrc
+
+# -rdynamic is a Linux/macOS linker flag (exposes symbols for backtrace).
+# MinGW/Windows does not support it.
+ifeq ($(OS),Windows_NT)
+    LDFLAGS ?=
+else
+    LDFLAGS ?= -rdynamic
+endif
 
 # Detect llvm-config (allow override via environment or command-line)
 LLVM_CONFIG ?= llvm-config
