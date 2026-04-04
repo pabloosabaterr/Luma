@@ -361,6 +361,9 @@ bool typecheck_os_stmt(AstNode *node, Scope *scope, ArenaAllocator *arena) {
       continue;
 
     if (stmt->type == AST_STMT_FUNCTION) {
+      if (scope_lookup_current_only(scope, stmt->stmt.func_decl.name)) {
+        continue;
+      }
       if (!typecheck_func_decl(stmt, scope, arena)) {
         tc_error(stmt, "@os Error",
                  "Failed to typecheck function in @os \"%s\" arm", target_os);
