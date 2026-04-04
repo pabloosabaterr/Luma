@@ -165,6 +165,8 @@ LLVMValueRef codegen_stmt_var_decl(CodeGenContext *ctx, AstNode *node) {
 LLVMValueRef codegen_stmt_function(CodeGenContext *ctx, AstNode *node) {
   const char *func_name = node->stmt.func_decl.name;
   bool forward_declared = node->stmt.func_decl.forward_declared;
+  bool is_dll_import = node->stmt.func_decl.is_dll_import;
+  const char *dll_callconv = node->stmt.func_decl.dll_callconv;
 
   // Generate parameter types
   LLVMTypeRef *param_types = (LLVMTypeRef *)arena_alloc(
@@ -196,6 +198,28 @@ LLVMValueRef codegen_stmt_function(CodeGenContext *ctx, AstNode *node) {
 
   LLVMModuleRef current_llvm_module =
       ctx->current_module ? ctx->current_module->module : ctx->module;
+
+  if (is_dll_import) {
+    LLVMValueRef func = LLVMGetNamedFunction(current_llvm_module, func_name);
+    if (!func) {
+      func = LLVMAddFunction(current_llvm_module, func_name, func_type);
+    }
+
+    LLVMSetLinkage(func, LLVMExternalLinkage);
+    LLVMSetDLLStorageClass(func, LLVMDLLImportStorageClass);
+
+    if (dll_callconv && strcmp(dll_callconv, "stdcall") == 0) {
+      LLVMSetFunctionCallConv(func, LLVMX86StdcallCallConv);
+    } else if (dll_callconv && strcmp(dll_callconv, "cdecl") == 0) {
+      LLVMSetFunctionCallConv(func, LLVMCCallConv);
+    } else {
+      LLVMSetFunctionCallConv(func, LLVMCCallConv);
+    }
+
+    add_symbol(ctx, func_name, func, func_type, true);
+
+    return func;
+  }
 
   // Check if function already exists
   LLVMValueRef existing_function =
@@ -362,11 +386,7 @@ generate_body: {
   if (LLVMGetTypeKind(return_type) == LLVMVoidTypeKind) {
     LLVMBuildRetVoid(ctx->builder);
   } else {
-    LLVMValueRef default_val = get_default_value(return_type);
-    if (!default_val) {
-      fprintf(stderr, "Error: Cannot create default value for return type\n");
-      return NULL;
-    }
+    LLVMValueRef default_val = LLVMConstNull(return_type);
     LLVMBuildRet(ctx->builder, default_val);
   }
 

@@ -78,6 +78,7 @@ typedef enum {
   // function attibutes
   TOK_RETURNES_OWNERSHIP, /** #returns_ownership */
   TOK_TAKES_OWNERSHIP,    /** #takes_ownership */
+  TOK_DLL_IMPORT,         /** #dll_import */
 
   // Symbols
   TOK_SYMBOL,      /**< Fallback symbol */
@@ -122,9 +123,9 @@ typedef enum {
   TOK_MODL,        /**< % */
   TOK_WHITESPACE,  /**< whitespace */
   TOK_COMMENT,     /**< comment */
-  TOK_DOC_COMMENT,    /**< /// documentation comment */
-  TOK_MODULE_DOC,     /**< //! module documentation comment */
-  TOK_DOCUMENT        // You already have this one
+  TOK_DOC_COMMENT, /**< /// documentation comment */
+  TOK_MODULE_DOC,  /**< //! module documentation comment */
+  TOK_DOCUMENT     // You already have this one
 } LumaTokenType;
 
 /**

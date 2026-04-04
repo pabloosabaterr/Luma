@@ -215,6 +215,56 @@ bool process_module_in_order(const char *module_name, GrowableArray *dep_graph,
     }
   }
 
+  // ===== PASS 1b: Pre-regester function signatures inside @os blocks
+  for (int j = 0; j < body_count; j++) {
+    if (!body[j])
+      continue;
+    if (body[j]->type != AST_PREPROCESSOR_OS)
+      continue;
+
+    AstNode *os_node = body[j];
+    const char *target_os =
+        module_scope->config ? module_scope->config->target_os : NULL;
+    if (!target_os)
+      continue;
+
+    AstNode *matched_body = NULL;
+    for (size_t k = 0; k < os_node->preprocessor.os.arm_count; k++) {
+      if (strcmp(os_node->preprocessor.os.platforms[k], target_os) == 0) {
+        matched_body = os_node->preprocessor.os.bodies[k];
+        break;
+      }
+    }
+
+    if (!matched_body && os_node->preprocessor.os.has_default) {
+      matched_body = os_node->preprocessor.os.default_body;
+    }
+    if (!matched_body || matched_body->type != AST_STMT_BLOCK)
+      continue;
+
+    for (size_t k = 0; k < matched_body->stmt.block.stmt_count; k++) {
+      AstNode *inner = matched_body->stmt.block.statements[k];
+      if (!inner)
+        continue;
+
+      if (inner->type == AST_STMT_FUNCTION) {
+        AstNode *func_type = create_function_type(
+            arena, inner->stmt.func_decl.param_types,
+            inner->stmt.func_decl.param_count,
+            inner->stmt.func_decl.return_type, inner->line, inner->column);
+
+        if (!scope_lookup_current_only(module_scope,
+                                       inner->stmt.func_decl.name)) {
+          scope_add_symbol_with_ownership(
+              module_scope, inner->stmt.func_decl.name, func_type,
+              inner->stmt.func_decl.is_public, false,
+              inner->stmt.func_decl.returns_ownership,
+              inner->stmt.func_decl.takes_ownership, arena);
+        }
+      }
+    }
+  }
+
   // ===== PASS 2: Process all other declarations =====
   for (int j = 0; j < body_count; j++) {
     if (!body[j])

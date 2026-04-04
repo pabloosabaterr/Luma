@@ -384,6 +384,12 @@ struct AstNode {
           bool takes_ownership;
           bool forward_declared;
           void *scope;
+
+          // DLL import link
+          bool is_dll_import;   // This is true when #dll_import(...) is present
+          const char *dll_name; // "kernel32.dll", NULL if not a dll import
+          const char
+              *dll_callconv; // "stdcall", "cdecl", NULL = platform default
         } func_decl;
 
         // If statement
@@ -547,6 +553,8 @@ AstNode *create_use_node(ArenaAllocator *arena, const char *module_name,
 AstNode *create_os_node(ArenaAllocator *arena, char **platforms,
                         AstNode **bodies, size_t arm_count, bool has_default,
                         AstNode *default_body, size_t line, size_t column);
+void apply_dll_import(AstNode *func_node, const char *dll_name,
+                      const char *callconv);
 
 // Expression creation functions
 AstNode *create_literal_expr(ArenaAllocator *arena, LiteralType lit_type,

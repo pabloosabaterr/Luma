@@ -41,3 +41,10 @@ AstNode *create_os_node(ArenaAllocator *arena, char **platforms,
   node->preprocessor.os.default_body = default_body;
   return node;
 }
+
+void apply_dll_import(AstNode *func_node, const char *dll_name,
+                      const char *callconv) {
+  func_node->stmt.func_decl.is_dll_import = true;
+  func_node->stmt.func_decl.dll_name = dll_name;
+  func_node->stmt.func_decl.dll_callconv = callconv; // Can be null
+}

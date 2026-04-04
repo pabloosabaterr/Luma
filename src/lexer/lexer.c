@@ -98,6 +98,7 @@ static const KeywordEntry preprocessor_directives[] = {
 static const KeywordEntry function_attributes[] = {
     {"#returns_ownership", TOK_RETURNES_OWNERSHIP},
     {"#takes_ownership", TOK_TAKES_OWNERSHIP},
+    {"#dll_import", TOK_DLL_IMPORT},
 };
 
 /**

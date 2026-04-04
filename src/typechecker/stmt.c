@@ -268,11 +268,20 @@ bool typecheck_func_decl(AstNode *node, Scope *scope, ArenaAllocator *arena) {
   bool returns_ownership = node->stmt.func_decl.returns_ownership;
   bool takes_ownership = node->stmt.func_decl.takes_ownership;
   bool forward_declared = node->stmt.func_decl.forward_declared;
+  bool is_dll_import = node->stmt.func_decl.is_dll_import;
 
   // Validate return type
   if (!return_type || return_type->category != Node_Category_TYPE) {
     tc_error(node, "Function Error", "Function '%s' has invalid return type",
              name);
+    return false;
+  }
+
+  // #dll_import functions must not have a body — catch any parser slip-through
+  if (is_dll_import && body) {
+    tc_error_help(node, "DLL Import Error",
+                  "Remove the function body and use ';' to end the declaration",
+                  "#dll_import function '%s' must not have a body", name);
     return false;
   }
 
@@ -286,7 +295,7 @@ bool typecheck_func_decl(AstNode *node, Scope *scope, ArenaAllocator *arena) {
       return false;
     }
 
-    // UPDATED: Allow main to have either 0 or 2 parameters
+    // Allow main to have either 0 or 2 parameters
     if (param_count != 0 && param_count != 2) {
       tc_error_help(node, "Main Parameters",
                     "The main function must have either no parameters or "
@@ -312,7 +321,6 @@ bool typecheck_func_decl(AstNode *node, Scope *scope, ArenaAllocator *arena) {
       // Second parameter should be 'argv: **byte' (pointer to pointer to byte)
       AstNode *argv_type = param_types[1];
 
-      // Check if it's **byte (pointer to pointer)
       if (argv_type->type != AST_TYPE_POINTER) {
         tc_error_help(node, "Main Parameter Error",
                       "Second parameter 'argv' must be of type '**byte'",
@@ -340,14 +348,12 @@ bool typecheck_func_decl(AstNode *node, Scope *scope, ArenaAllocator *arena) {
         return false;
       }
 
-      // Optionally validate parameter names
       if (strcmp(param_names[0], "argc") != 0) {
         tc_error_help(
             node, "Main Parameter Warning",
             "First parameter should conventionally be named 'argc'",
             "First parameter is named '%s', consider renaming to 'argc'",
             param_names[0]);
-        // Don't return false - this is just a warning
       }
 
       if (strcmp(param_names[1], "argv") != 0) {
@@ -356,7 +362,6 @@ bool typecheck_func_decl(AstNode *node, Scope *scope, ArenaAllocator *arena) {
             "Second parameter should conventionally be named 'argv'",
             "Second parameter is named '%s', consider renaming to 'argv'",
             param_names[1]);
-        // Don't return false - this is just a warning
       }
     }
 
@@ -395,8 +400,6 @@ bool typecheck_func_decl(AstNode *node, Scope *scope, ArenaAllocator *arena) {
   Symbol *existing = scope_lookup_current_only(scope, name);
 
   if (existing) {
-    // Function already declared - check if this is valid
-
     if (forward_declared) {
       // Trying to add another prototype - error
       tc_error_id(node, name, "Duplicate Prototype",
@@ -431,10 +434,6 @@ bool typecheck_func_decl(AstNode *node, Scope *scope, ArenaAllocator *arena) {
       return false;
     }
 
-    // Signature matches - this is a valid implementation
-    // Update the symbol to mark it as implemented (not forward declared)
-    // We'll update the symbol's type node if needed
-
   } else {
     // First declaration of this function
     if (!scope_add_symbol_with_ownership(scope, name, func_type, is_public,
@@ -446,13 +445,9 @@ bool typecheck_func_decl(AstNode *node, Scope *scope, ArenaAllocator *arena) {
     }
   }
 
-  // If this is just a forward declaration (prototype), we're done
-  if (forward_declared) {
-    if (body) {
-      tc_error(node, "Forward Declaration Error",
-               "Forward declared function '%s' should not have a body", name);
-      return false;
-    }
+  // Forward declarations and #dll_import functions are both complete without
+  // a body — the symbol is registered in scope and we're done.
+  if (forward_declared || is_dll_import) {
     return true;
   }
 
@@ -479,23 +474,6 @@ bool typecheck_func_decl(AstNode *node, Scope *scope, ArenaAllocator *arena) {
                param_names[i], name);
       return false;
     }
-
-    // REMOVED: The incorrect tracking of #takes_ownership parameters
-    // The old code was:
-    // if (takes_ownership && is_pointer_type(param_types[i])) {
-    //   static_memory_track_alloc(analyzer, node->line, node->column,
-    //                            param_names[i], name, ...);
-    // }
-    //
-    // This was wrong because:
-    // 1. It tracked parameters as allocations within the function
-    // 2. Cleanup functions like free_arena() would report false leaks
-    // 3. The actual tracking should happen at call sites, not here
-    //
-    // The correct behavior:
-    // - Caller tracks allocation before calling #takes_ownership function
-    // - At call site, ownership transfer is recorded (in typecheck_call_expr)
-    // - No tracking needed in the function receiving ownership
   }
 
   // Typecheck function body
@@ -505,7 +483,7 @@ bool typecheck_func_decl(AstNode *node, Scope *scope, ArenaAllocator *arena) {
     return false;
   }
 
-  // Process deferred frees - these represent cleanup at function exit
+  // Process deferred frees — these represent cleanup at function exit
   StaticMemoryAnalyzer *analyzer = get_static_analyzer(func_scope);
 
   if (analyzer && func_scope->deferred_frees.count > 0) {
@@ -514,7 +492,6 @@ bool typecheck_func_decl(AstNode *node, Scope *scope, ArenaAllocator *arena) {
           (const char **)((char *)func_scope->deferred_frees.data +
                           i * sizeof(const char *));
       if (*var_ptr) {
-        // Mark as freed at function exit
         static_memory_track_free(analyzer, *var_ptr, name);
       }
     }

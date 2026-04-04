@@ -1,10 +1,25 @@
 @module "main"
 
-@use "std_io" as io
+// @use "std_io" as io
+
+@os {
+  "windows" -> {
+    #dll_import("kernel32.dll", callconv: "stdcall")
+    pub const ExitProcess -> fn (code: int) void; 
+
+    #dll_import("kernel32.dll")
+    pub const GetLastError -> fn () int;
+  }
+  "linux" -> {
+     const random -> fn () int { return 20; }
+  }
+  "macos" -> {}
+}
 
 pub const main -> fn () int {
-  io::print("%d\n", [io::int_arg(10)]);
+  // io::print("%d\n", [io::int_arg(random())]);
 
   return 0;
 }
+
 

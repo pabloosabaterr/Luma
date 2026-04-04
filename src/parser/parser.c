@@ -465,62 +465,153 @@ Stmt *parse_stmt(Parser *parser) {
   bool returns_ownership = false;
   bool takes_ownership = false;
   bool is_public = false;
+  bool is_dll_import = false;
+  const char *dll_name = NULL;
+  const char *dll_callconv = NULL;
 
-  // Check for ownership modifiers
+  // Check for attribute modifiers (#returns_ownership, #takes_ownership,
+  // #dll_import)
   while (p_current(parser).type_ == TOK_RETURNES_OWNERSHIP ||
-         p_current(parser).type_ == TOK_TAKES_OWNERSHIP) {
+         p_current(parser).type_ == TOK_TAKES_OWNERSHIP ||
+         p_current(parser).type_ == TOK_DLL_IMPORT) {
+
     if (p_current(parser).type_ == TOK_RETURNES_OWNERSHIP) {
       returns_ownership = true;
       p_advance(parser);
+
     } else if (p_current(parser).type_ == TOK_TAKES_OWNERSHIP) {
       takes_ownership = true;
       p_advance(parser);
+
+    } else if (p_current(parser).type_ == TOK_DLL_IMPORT) {
+      is_dll_import = true;
+      p_advance(parser); // consume #dll_import
+
+      p_consume(parser, TOK_LPAREN, "Expected '(' after #dll_import");
+
+      if (p_current(parser).type_ != TOK_STRING) {
+        parser_error(
+            parser, "SyntaxError", parser->file_path,
+            "Expected DLL name string as first argument to #dll_import",
+            p_current(parser).line, p_current(parser).col,
+            p_current(parser).length);
+        return NULL;
+      }
+      dll_name = arena_strdup(parser->arena, get_name(parser));
+      p_advance(parser); // consume dll name string
+
+      // Optional: , callconv: "stdcall"
+      if (p_current(parser).type_ == TOK_COMMA) {
+        p_advance(parser); // consume ','
+
+        if (p_current(parser).type_ != TOK_IDENTIFIER) {
+          parser_error(parser, "SyntaxError", parser->file_path,
+                       "Expected 'callconv' option in #dll_import",
+                       p_current(parser).line, p_current(parser).col,
+                       p_current(parser).length);
+          return NULL;
+        }
+
+        char *kw = get_name(parser);
+        p_advance(parser); // consume option name
+
+        if (strcmp(kw, "callconv") != 0) {
+          parser_error(parser, "SyntaxError", parser->file_path,
+                       "Unknown #dll_import option, expected 'callconv'",
+                       p_current(parser).line, p_current(parser).col,
+                       p_current(parser).length);
+          return NULL;
+        }
+
+        p_consume(parser, TOK_COLON, "Expected ':' after 'callconv'");
+
+        if (p_current(parser).type_ != TOK_STRING) {
+          parser_error(parser, "SyntaxError", parser->file_path,
+                       "Expected calling convention string after 'callconv:'",
+                       p_current(parser).line, p_current(parser).col,
+                       p_current(parser).length);
+          return NULL;
+        }
+        dll_callconv = arena_strdup(parser->arena, get_name(parser));
+        p_advance(parser); // consume callconv string
+      }
+
+      p_consume(parser, TOK_RPAREN, "Expected ')' to close #dll_import");
     }
   }
 
   // Check for visibility modifiers
   if (p_current(parser).type_ == TOK_PUBLIC) {
     is_public = true;
-    p_advance(parser); // Advance past the public token
+    p_advance(parser);
   } else if (p_current(parser).type_ == TOK_PRIVATE) {
     is_public = false;
-    p_advance(parser); // Advance past the private token
+    p_advance(parser);
   }
+
+  Stmt *node = NULL;
 
   switch (p_current(parser).type_) {
   case TOK_USE:
-    return use_stmt(parser);
+    node = use_stmt(parser);
+    break;
   case TOK_OS:
-    return os_stmt(parser);
+    node = os_stmt(parser);
+    break;
   case TOK_CONST:
-    return const_stmt(parser, is_public, returns_ownership, takes_ownership);
+    node = const_stmt(parser, is_public, returns_ownership, takes_ownership);
+    break;
   case TOK_VAR:
-    return var_stmt(parser, is_public);
+    node = var_stmt(parser, is_public);
+    break;
   case TOK_RETURN:
-    return return_stmt(parser);
+    node = return_stmt(parser);
+    break;
   case TOK_LBRACE:
-    return block_stmt(parser);
+    node = block_stmt(parser);
+    break;
   case TOK_IF:
-    return if_stmt(parser);
+    node = if_stmt(parser);
+    break;
   case TOK_LOOP:
-    return loop_stmt(parser);
+    node = loop_stmt(parser);
+    break;
   case TOK_PRINT:
-    return print_stmt(parser, false);
+    node = print_stmt(parser, false);
+    break;
   case TOK_PRINTLN:
-    return print_stmt(parser, true);
+    node = print_stmt(parser, true);
+    break;
   case TOK_CONTINUE:
   case TOK_BREAK:
-    return break_continue_stmt(parser, p_current(parser).type_ == TOK_CONTINUE);
+    node = break_continue_stmt(parser, p_current(parser).type_ == TOK_CONTINUE);
+    break;
   case TOK_DEFER:
-    return defer_stmt(parser);
+    node = defer_stmt(parser);
+    break;
   case TOK_SWITCH:
-    return switch_stmt(parser);
+    node = switch_stmt(parser);
+    break;
   case TOK_IMPL:
-    return impl_stmt(parser);
+    node = impl_stmt(parser);
+    break;
   default:
-    return expr_stmt(
-        parser); // expression statements handle their own semicolon
+    node = expr_stmt(parser);
+    break;
   }
+
+  // Stamp dll_import metadata onto the resulting function node
+  if (node && is_dll_import) {
+    if (node->type != AST_STMT_FUNCTION) {
+      parser_error(parser, "SyntaxError", parser->file_path,
+                   "#dll_import can only be applied to function declarations",
+                   node->line, node->column, 0);
+      return NULL;
+    }
+    apply_dll_import(node, dll_name, dll_callconv);
+  }
+
+  return node;
 }
 
 /**
