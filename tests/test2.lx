@@ -1,25 +1,95 @@
 @module "main"
 
-// @use "std_io" as io
-
-@os {
-  "windows" -> {
-    #dll_import("kernel32.dll", callconv: "stdcall")
-    pub const ExitProcess -> fn (code: int) void; 
-
-    #dll_import("kernel32.dll")
-    pub const GetLastError -> fn () int;
-  }
-  "linux" -> {
-     const random -> fn () int { return 20; }
-  }
-  "macos" -> {}
-}
+@use "std_win32" as win32
 
 pub const main -> fn () int {
-  let err: int = GetLastError();
-  // ExitProcess(err);
-  return 42;
+  win32::print_str("TEST 1: stdout write\n");
+  win32::eprint("TEST 1: stderr write\n");
+
+  // TEST 2: GetCurrentProcessId
+  let pid: int = win32::GetCurrentProcessId();
+  win32::print_str("TEST 2: got a pid (should be nonzero)\n");
+  if (pid == 0) {
+    win32::eprint("FAIL: pid is 0\n");
+    return 1;
+  }
+
+  // TEST 3: GetLastError (should be 0 after clean operations)
+  win32::SetLastError(0);
+  let err: int = win32::GetLastError();
+  if (err != 0) {
+    win32::eprint("FAIL: GetLastError returned nonzero after SetLastError(0)\n");
+    return 1;
+  }
+  win32::print_str("TEST 3: GetLastError/SetLastError OK\n");
+
+  // TEST 4: GetTickCount64 (should be nonzero on a running system)
+  let ticks: int = win32::GetTickCount64();
+  if (ticks == 0) {
+    win32::eprint("FAIL: GetTickCount64 returned 0\n");
+    return 1;
+  }
+  win32::print_str("TEST 4: GetTickCount64 OK\n");
+
+  // TEST 5: File write (create a new file)
+  let whandle: int = win32::open_write("win32_test.tmp");
+  if (win32::is_invalid_handle(whandle)) {
+    win32::eprint("FAIL: open_write returned invalid handle\n");
+    return 1;
+  }
+  let msg: *byte = "hello from win32\n";
+  let written: int = 0;
+  win32::WriteFile(whandle, cast<*void>(msg), 17, &written, cast<*void>(0));
+  win32::CloseHandle(whandle);
+  if (written != 17) {
+    win32::eprint("FAIL: WriteFile wrote wrong byte count\n");
+    return 1;
+  }
+  win32::print_str("TEST 5: file write OK\n");
+
+  // TEST 6: File read back
+  let rhandle: int = win32::open_read("win32_test.tmp");
+  if (win32::is_invalid_handle(rhandle)) {
+    win32::eprint("FAIL: open_read returned invalid handle\n");
+    return 1;
+  }
+  let size: int = win32::file_size(rhandle);
+  if (size != 17) {
+    win32::eprint("FAIL: file_size wrong\n");
+    win32::CloseHandle(rhandle);
+    return 1;
+  }
+  let buf: [byte; 32];
+  let nread: int = 0;
+  win32::ReadFile(rhandle, cast<*void>(&buf), 31, &nread, cast<*void>(0));
+  win32::CloseHandle(rhandle);
+  if (nread != 17) {
+    win32::eprint("FAIL: ReadFile read wrong byte count\n");
+    return 1;
+  }
+  win32::print_str("TEST 6: file read OK\n");
+
+  // TEST 7: DeleteFile cleanup
+  let deleted: int = win32::DeleteFileA("win32_test.tmp");
+  if (win32::win32_failed(deleted)) {
+    win32::eprint("FAIL: DeleteFileA failed\n");
+    return 1;
+  }
+  win32::print_str("TEST 7: DeleteFileA OK\n");
+
+  // TEST 8: Sleep (just confirm it doesn't crash)
+  win32::Sleep(1);
+  win32::print_str("TEST 8: Sleep OK\n");
+
+  // TEST 9: GetCurrentDirectory
+  let dir_buf: [byte; 512];
+  let dir_len: int = win32::GetCurrentDirectoryA(512, cast<*byte>(&dir_buf));
+  if (dir_len == 0) {
+    win32::eprint("FAIL: GetCurrentDirectoryA returned 0\n");
+    return 1;
+  }
+  win32::print_str("TEST 9: GetCurrentDirectoryA OK\n");
+
+  win32::print_str("ALL TESTS PASSED\n");
+  return 0;
 }
-
-

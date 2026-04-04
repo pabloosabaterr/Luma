@@ -109,9 +109,8 @@ const local_write -> fn (fd: int, buf: *void, count: int) int {
         "linux"   -> { return __syscall__(SYS_WRITE, fd, cast<int>(buf), count); }
         "macos"   -> { return __syscall__(SYS_WRITE, fd, cast<int>(buf), count); }
         "windows" -> {
-            let handle: int = GetStdHandle(fd);
             let written: int = 0;
-            WriteFile(handle, buf, count, &written, cast<*void>(0));
+            WriteFile(fd, buf, count, &written, cast<*void>(0));
             return written;
         }
     }
@@ -124,7 +123,7 @@ const local_read -> fn (fd: int, buf: *void, count: int) int {
         "windows" -> {
             let bytes_read: int = 0;
             let ok: int = ReadFile(fd, buf, count, &bytes_read, cast<*void>(0));
-            if (ok == 0) { return -1; }
+            if (ok == 0) { return INVALID_HANDLE_VALUE; }
             return bytes_read;
         }
     }
@@ -137,7 +136,7 @@ const local_open_read -> fn (path: *byte) int {
         "windows" -> {
             return CreateFileA(
                 path, GENERIC_READ, FILE_SHARE_READ,
-                cast<*void>(0), OPEN_EXISTING, 0, 0
+                cast<*void>(0), OPEN_EXISTING, 128, 0
             );
         }
     }
@@ -150,7 +149,7 @@ const local_open_write -> fn (path: *byte) int {
         "windows" -> {
             return CreateFileA(
                 path, GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ,
-                cast<*void>(0), OPEN_EXISTING, 0, 0
+                cast<*void>(0), OPEN_EXISTING, 128, 0
             );
         }
     }
@@ -168,7 +167,7 @@ const local_is_error -> fn (result: int) bool {
     @os {
         "linux"   -> { return result < 0 && result >= -4095; }
         "macos"   -> { return result < 0 && result >= -4095; }
-        "windows" -> { return result == INVALID_HANDLE_VALUE || result == 0; }
+        "windows" -> { return result == INVALID_HANDLE_VALUE; }
     }
 }
 
@@ -182,13 +181,12 @@ const local_eprint -> fn (s: *byte) int {
     @os {
         "linux"   -> { return local_write_str(STDERR, s); }
         "macos"   -> { return local_write_str(STDERR, s); }
-        "windows" -> { return local_write_str(STD_ERROR_HANDLE, s); }
+        "windows" -> {
+            let handle: int = GetStdHandle(STD_ERROR_HANDLE);
+            return local_write_str(handle, s);
+        }
     }
 }
-
-// ============================================================================
-// Constants
-// ============================================================================
 
 const INITIAL_BUFFER_SIZE: int  = 4096;
 const BUFFER_GROWTH_FACTOR: int = 2;
@@ -196,10 +194,6 @@ const ARG_INT: int   = 0;
 const ARG_STR: int   = 1;
 const ARG_BYTE: int  = 2;
 const ARG_FLOAT: int = 3;
-
-// ============================================================================
-// FormatArg
-// ============================================================================
 
 pub const FormatArg -> struct {
     tag: int,
@@ -226,10 +220,6 @@ pub const int_arg -> fn (arg: int) FormatArg {
 pub const byte_arg -> fn (arg: byte) FormatArg {
     return FormatArg { tag: ARG_BYTE, str_ptr: "", int_val: 0, byte_val: arg };
 }
-
-// ============================================================================
-// Integer → string
-// ============================================================================
 
 #returns_ownership
 const from_int -> fn (n: int) *byte {
@@ -268,10 +258,6 @@ const from_int -> fn (n: int) *byte {
     s[i] = cast<byte>(0);
     return s;
 }
-
-// ============================================================================
-// print
-// ============================================================================
 
 pub const print -> fn (s: *byte, args: [FormatArg; 256]) int {
     let buffer: [byte; 1024];
@@ -330,13 +316,12 @@ pub const print -> fn (s: *byte, args: [FormatArg; 256]) int {
     @os {
         "linux"   -> { return local_write(STDOUT, cast<*void>(&buffer), buf_index); }
         "macos"   -> { return local_write(STDOUT, cast<*void>(&buffer), buf_index); }
-        "windows" -> { return local_write(STD_OUTPUT_HANDLE, cast<*void>(&buffer), buf_index); }
+        "windows" -> {
+            let handle: int = GetStdHandle(STD_OUTPUT_HANDLE);
+            return local_write(handle, cast<*void>(&buffer), buf_index);
+        }
     }
 }
-
-// ============================================================================
-// print_err
-// ============================================================================
 
 pub const print_err -> fn (s: *byte, args: [int; 256]) int {
     let buffer: *byte = cast<*byte>(alloc(256 * sizeof<byte>));
@@ -362,10 +347,6 @@ pub const print_err -> fn (s: *byte, args: [int; 256]) int {
     buffer[buf_index] = '\0';
     return local_eprint(buffer);
 }
-
-// ============================================================================
-// read_file
-// ============================================================================
 
 #returns_ownership
 pub const read_file -> fn (path: *byte) *byte {
@@ -439,10 +420,6 @@ pub const read_file -> fn (path: *byte) *byte {
     local_close(fd);
     return buffer;
 }
-
-// ============================================================================
-// write_buffer_to_file
-// ============================================================================
 
 pub const write_buffer_to_file -> fn (path: *byte, buffer: *byte) int {
     let fd: int = local_open_write(path);
